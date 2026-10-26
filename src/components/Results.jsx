@@ -2,6 +2,9 @@ import { useDeferredValue, useMemo, useState } from 'react'
 import { INTENTS, analyze } from '../lib/analysis.js'
 import { downloadText, safeFilename, toCsv } from '../lib/csv.js'
 import { methodLabel } from '../lib/expansion.js'
+import { applyCleanup, presentSuggestions } from '../lib/cleanup.js'
+import { tokenize } from '../lib/text.js'
+import CleanupPanel from './CleanupPanel.jsx'
 
 const PAGE_SIZE = 100
 const intentLabel = (id) => INTENTS.find((i) => i.id === id)?.label ?? id
@@ -32,7 +35,7 @@ const SORTS = {
   found: (a, b) => a.index - b.index,
 }
 
-export default function Results({ research, starred, onToggleStar }) {
+export default function Results({ research, starred, onToggleStar, cleanup, onCleanupChange }) {
   const [tab, setTab] = useState('keywords')
   const [filters, setFilters] = useState(EMPTY_FILTERS)
   const [sort, setSort] = useState('hits')
@@ -41,11 +44,27 @@ export default function Results({ research, starred, onToggleStar }) {
   // research.keywords is mutated in place by the engine, so key the memo on counts.
   const count = research.order.length
   const version = useDeferredValue(`${count}:${research.counters.requests}:${research.status}`)
-  const analysis = useMemo(() => {
-    const list = research.order.map((key, index) => ({ key, index, ...research.keywords[key] }))
-    return analyze(list, { seed: research.config.seed, language: research.config.language })
+  const base = useMemo(
+    () => research.order.map((key, index) => {
+      const kw = research.keywords[key]
+      return { key, index, ...kw, tokens: tokenize(kw.text) }
+    }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [version, research.config.seed])
+    [version],
+  )
+  const cleaned = useMemo(() => applyCleanup(base, cleanup, research.config.seed), [base, cleanup, research.config.seed])
+  const analysis = useMemo(
+    () => analyze(cleaned.kept, { seed: research.config.seed, language: research.config.language }),
+    [cleaned, research.config.seed, research.config.language],
+  )
+  const suggestions = useMemo(
+    () => presentSuggestions(base, research.config.language, cleanup.exclude),
+    [base, research.config.language, cleanup.exclude],
+  )
+
+  function excludeWord(word) {
+    if (!cleanup.exclude.includes(word)) onCleanupChange({ ...cleanup, exclude: [...cleanup.exclude, word] })
+  }
 
   const rows = useMemo(
     () => analysis.rows.map((r) => ({ ...r, starred: starred.has(r.key) })),
@@ -100,7 +119,7 @@ export default function Results({ research, starred, onToggleStar }) {
     <section className="card results" aria-label="Results">
       <div className="results-head">
         <div className="tabs" role="tablist">
-          <Tab id="keywords" tab={tab} setTab={setTab}>Keywords <span>{count.toLocaleString()}</span></Tab>
+          <Tab id="keywords" tab={tab} setTab={setTab}>Keywords <span>{rows.length.toLocaleString()}</span></Tab>
           <Tab id="topics" tab={tab} setTab={setTab}>Topics <span>{analysis.topics.length}</span></Tab>
           <Tab id="words" tab={tab} setTab={setTab}>New words <span>{analysis.words.length}</span></Tab>
         </div>
@@ -113,6 +132,13 @@ export default function Results({ research, starred, onToggleStar }) {
           )}
         </div>
       </div>
+
+      <CleanupPanel
+        cleanup={cleanup}
+        onChange={(next) => { onCleanupChange(next); setPage(0) }}
+        suggestions={suggestions}
+        summary={{ total: base.length, kept: cleaned.kept.length, hidden: cleaned.hidden, reasons: cleaned.reasons }}
+      />
 
       {tab === 'keywords' && (
         <>
@@ -188,7 +214,7 @@ export default function Results({ research, starred, onToggleStar }) {
 
       {tab === 'topics' && <Topics analysis={analysis} rows={rows} onOpen={(topic) => showInTable({ topic })} />}
 
-      {tab === 'words' && <Words words={analysis.words} seed={research.config.seed} onOpen={(word) => showInTable({ search: word })} />}
+      {tab === 'words' && <Words words={analysis.words} seed={research.config.seed} onOpen={(word) => showInTable({ search: word })} onExclude={excludeWord} />}
     </section>
   )
 }
@@ -237,17 +263,18 @@ function Topics({ analysis, rows, onOpen }) {
   )
 }
 
-function Words({ words, seed, onOpen }) {
+function Words({ words, seed, onOpen, onExclude }) {
   const max = words[0]?.count ?? 1
   return (
     <>
-      <p className="hint">Words that appear in results but not in “{seed}”, ranked by how many keywords contain them. These are the sub-topics of the niche.</p>
-      <div className="table-wrap">
+      <p className="hint">Words that appear in results but not in “{seed}”, ranked by how many keywords contain them. These are the sub-topics of the niche. Click ✕ to hide every keyword containing a word that doesn’t fit your niche.</p>
+      <div className="table-wrap words-wrap">
         <table className="words">
-          <thead><tr><th>Word</th><th className="num">Keywords</th><th aria-hidden="true" /></tr></thead>
+          <thead><tr><th className="x-col"><span className="sr">Exclude</span></th><th>Word</th><th className="num">Keywords</th><th aria-hidden="true" /></tr></thead>
           <tbody>
             {words.slice(0, 300).map((w) => (
               <tr key={w.word}>
+                <td className="x-col"><button type="button" className="x" onClick={() => onExclude(w.word)} aria-label={`Exclude keywords containing ${w.word}`} title={`Hide all ${w.count} keywords containing “${w.word}”`}>✕</button></td>
                 <td><button type="button" className="link" onClick={() => onOpen(w.word)}>{w.word}</button></td>
                 <td className="num">{w.count}</td>
                 <td className="bar-cell"><div className="mini-bar" style={{ width: `${Math.max(2, (w.count / max) * 100)}%` }} /></td>

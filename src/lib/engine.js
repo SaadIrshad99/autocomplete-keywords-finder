@@ -15,6 +15,9 @@ const JITTER_MS = 200
 const MAX_ATTEMPTS_PER_QUERY = 3
 const FAILS_BEFORE_PAUSE = 5
 const NON_FINAL_LEVEL_SHARE = 0.6
+const COOLDOWN_BASE_MS = 2 * 60 * 1000
+const COOLDOWN_MAX_MS = 10 * 60 * 1000
+const OK_STREAK_TO_RESET_COOLDOWN = 30
 const STATE_VERSION = 1
 
 export const PRESETS = {
@@ -44,10 +47,13 @@ export function createInitialState(config) {
     expanded: [keyOf(config.seed)],
     keywords: {},
     order: [],
-    counters: { requests: 0, ok: 0, failed: 0 },
+    counters: { requests: 0, ok: 0, failed: 0, skipped: 0 },
     failures: [],
     delayMs: config.delayMs,
     consecutiveFails: 0,
+    okStreak: 0,
+    cooldowns: 0,
+    resumeAt: null,
     current: null,
     startedAt: Date.now(),
     finishedAt: null,
@@ -87,6 +93,8 @@ export class ResearchEngine {
     this.scheduled = new Set(state.queue.map((w) => keyOf(w.query)))
     this.running = false
     this.wake = null
+    this.cooldownTimer = null
+    if (state.status === 'cooldown') this.scheduleAutoResume()
   }
 
   /** Plain JSON snapshot suitable for saving. */
@@ -99,7 +107,8 @@ export class ResearchEngine {
   }
 
   pause() {
-    if (this.state.status !== 'running') return
+    if (!['running', 'cooldown'].includes(this.state.status)) return
+    this.clearCooldown()
     this.state.status = 'paused'
     this.state.message = null
     this.interruptSleep()
@@ -108,18 +117,47 @@ export class ResearchEngine {
 
   stop() {
     if (['completed', 'stopped'].includes(this.state.status)) return
+    this.clearCooldown()
     this.finish('user', 'stopped')
     this.interruptSleep()
     this.emit()
   }
 
   resume() {
-    if (!['paused', 'blocked'].includes(this.state.status)) return
+    if (!['paused', 'blocked', 'cooldown'].includes(this.state.status)) return
+    this.clearCooldown()
     this.state.status = 'running'
     this.state.message = null
     this.state.consecutiveFails = 0
     this.emit()
     return this.run()
+  }
+
+  /** Google refused several times in a row: wait, then retry automatically. */
+  enterCooldown() {
+    const s = this.state
+    const ms = Math.min(COOLDOWN_MAX_MS, COOLDOWN_BASE_MS * 2 ** s.cooldowns)
+    s.cooldowns += 1
+    s.status = 'cooldown'
+    s.current = null
+    s.resumeAt = Date.now() + ms
+    s.message = 'Google asked us to slow down. Your results are saved and the tool will retry automatically.'
+    this.scheduleAutoResume()
+  }
+
+  scheduleAutoResume() {
+    clearTimeout(this.cooldownTimer)
+    const wait = Math.max(0, (this.state.resumeAt ?? Date.now()) - Date.now())
+    this.cooldownTimer = setTimeout(() => {
+      this.cooldownTimer = null
+      if (this.state.status === 'cooldown') this.resume()
+    }, wait)
+  }
+
+  clearCooldown() {
+    clearTimeout(this.cooldownTimer)
+    this.cooldownTimer = null
+    this.state.resumeAt = null
   }
 
   interruptSleep() {
@@ -187,6 +225,7 @@ export class ResearchEngine {
     s.counters.requests += 1
     s.counters.failed += 1
     s.consecutiveFails += 1
+    s.okStreak = 0
     s.delayMs = Math.min(MAX_DELAY_MS, s.delayMs * 2)
     work.attempts = (work.attempts ?? 0) + 1
     if (work.attempts >= MAX_ATTEMPTS_PER_QUERY) {
@@ -195,11 +234,7 @@ export class ResearchEngine {
       this.requested.add(key)
       if (s.failures.length < 50) s.failures.push({ query: work.query, error: String(error?.message ?? error) })
     }
-    if (s.consecutiveFails >= FAILS_BEFORE_PAUSE) {
-      s.status = 'blocked'
-      s.current = null
-      s.message = 'Google stopped answering for now. Your results are saved — wait 10–15 minutes, then click Resume.'
-    }
+    if (s.consecutiveFails >= FAILS_BEFORE_PAUSE) this.enterCooldown()
   }
 
   recordSuccess(work, key, results) {
@@ -207,12 +242,19 @@ export class ResearchEngine {
     s.counters.requests += 1
     s.counters.ok += 1
     s.consecutiveFails = 0
+    s.okStreak = (s.okStreak ?? 0) + 1
+    if (s.okStreak >= OK_STREAK_TO_RESET_COOLDOWN) s.cooldowns = 0
     s.delayMs = Math.max(s.config.delayMs, Math.round(s.delayMs * 0.7))
     s.queue.shift()
     this.scheduled.delete(key)
     this.requested.add(key)
 
     for (const { text, position } of results) {
+      // Every keyword must contain the seed words (any order, plurals and same-root words allowed).
+      if (!containsSeed(text, s.config.seed, s.config.language)) {
+        s.counters.skipped = (s.counters.skipped ?? 0) + 1
+        continue
+      }
       const k = keyOf(text)
       const existing = s.keywords[k]
       if (existing) {
@@ -247,7 +289,7 @@ export class ResearchEngine {
 
     const candidates = s.order
       .map((k) => [k, s.keywords[k]])
-      .filter(([k, kw]) => kw.depth === s.level && !this.expanded.has(k) && containsSeed(kw.text, config.seed))
+      .filter(([k, kw]) => kw.depth === s.level && !this.expanded.has(k) && containsSeed(kw.text, config.seed, config.language))
       .sort(([, a], [, b]) => b.hits - a.hits || a.position - b.position || wordCount(a.text) - wordCount(b.text))
 
     const isFinalLevel = s.level + 1 === config.maxDepth

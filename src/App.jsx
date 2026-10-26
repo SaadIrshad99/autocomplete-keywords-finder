@@ -5,12 +5,13 @@ import Results from './components/Results.jsx'
 import { ResearchEngine, createInitialState, isValidSavedState } from './lib/engine.js'
 import { fetchSuggestions } from './lib/suggest.js'
 import { clearState, loadState, saveState } from './lib/storage.js'
+import { DEFAULT_CLEANUP } from './lib/cleanup.js'
 
 const SAVE_EVERY_MS = 2000
 
 function restore() {
   const saved = loadState()
-  if (!saved || !isValidSavedState(saved.research)) return { research: null, starred: [] }
+  if (!saved || !isValidSavedState(saved.research)) return { research: null, starred: [], cleanup: DEFAULT_CLEANUP }
   const research = saved.research
   // A refresh interrupts a running research; offer Resume instead.
   if (research.status === 'running') {
@@ -18,17 +19,22 @@ function restore() {
     research.current = null
     research.message = 'The page was reloaded. Click Resume to continue where you left off.'
   }
-  return { research, starred: Array.isArray(saved.starred) ? saved.starred : [] }
+  return {
+    research,
+    starred: Array.isArray(saved.starred) ? saved.starred : [],
+    cleanup: { ...DEFAULT_CLEANUP, ...(saved.cleanup && typeof saved.cleanup === 'object' ? saved.cleanup : {}) },
+  }
 }
 
 export default function App() {
   const [initial] = useState(restore)
   const [research, setResearch] = useState(initial.research)
   const [starred, setStarred] = useState(() => new Set(initial.starred))
+  const [cleanup, setCleanup] = useState(initial.cleanup)
   const [storageOk, setStorageOk] = useState(true)
   const engineRef = useRef(null)
   const lastSave = useRef(0)
-  const latest = useRef({ research: initial.research, starred: initial.starred })
+  const latest = useRef({ research: initial.research, starred: initial.starred, cleanup: initial.cleanup })
 
   const persist = useCallback((force = false) => {
     const now = Date.now()
@@ -52,6 +58,11 @@ export default function App() {
     return engineRef.current
   }, [persist])
 
+  // A run that was cooling down when the page reloaded keeps its automatic retry.
+  useEffect(() => {
+    if (initial.research?.status === 'cooldown') getEngine(initial.research)
+  }, [initial, getEngine])
+
   // Save once more when the tab is hidden or closed.
   useEffect(() => {
     const onHide = () => persist(true)
@@ -66,8 +77,9 @@ export default function App() {
   function start(config) {
     engineRef.current = null
     const state = createInitialState(config)
-    latest.current = { research: state, starred: [] }
+    latest.current = { research: state, starred: [], cleanup: DEFAULT_CLEANUP }
     setStarred(new Set())
+    setCleanup(DEFAULT_CLEANUP)
     setResearch(state)
     getEngine(state).run()
   }
@@ -81,10 +93,11 @@ export default function App() {
     if (count && !window.confirm(`Start a new research? The ${count} keywords from this run will be removed. Export them first if you need them.`)) return
     engineRef.current?.stop()
     engineRef.current = null
-    latest.current = { research: null, starred: [] }
+    latest.current = { research: null, starred: [], cleanup: DEFAULT_CLEANUP }
     clearState()
     setResearch(null)
     setStarred(new Set())
+    setCleanup(DEFAULT_CLEANUP)
   }
 
   function toggleStar(key) {
@@ -96,6 +109,12 @@ export default function App() {
       persist(true)
       return next
     })
+  }
+
+  function changeCleanup(next) {
+    setCleanup(next)
+    latest.current = { ...latest.current, cleanup: next }
+    persist(true)
   }
 
   return (
@@ -114,7 +133,7 @@ export default function App() {
         {research ? (
           <>
             <RunPanel research={research} onPause={pause} onResume={resume} onStop={stop} onReset={reset} storageOk={storageOk} />
-            <Results research={research} starred={starred} onToggleStar={toggleStar} />
+            <Results research={research} starred={starred} onToggleStar={toggleStar} cleanup={cleanup} onCleanupChange={changeCleanup} />
           </>
         ) : (
           <SetupForm onStart={start} />

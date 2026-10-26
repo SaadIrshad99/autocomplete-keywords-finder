@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { analyze, detectIntents } from './analysis.js'
 import { csvCell, toCsv } from './csv.js'
 import { DEFAULT_DEEP_METHODS, DEFAULT_SEED_METHODS, ResearchEngine, createInitialState, estimateRun } from './engine.js'
@@ -58,6 +58,10 @@ describe('text helpers', () => {
     expect(containsSeed('best age calculators online', 'age calculator')).toBe(true)
     expect(containsSeed('calculator for age in days', 'age calculator')).toBe(true)
     expect(containsSeed('pregnancy due date', 'age calculator')).toBe(false)
+    expect(containsSeed('calculate age in days', 'age calculator')).toBe(true)
+    expect(containsSeed('agent calculator', 'age calculator')).toBe(false)
+    expect(containsSeed('kids age calculator', 'age calculator for kids')).toBe(true)
+    expect(containsSeed('running shoes women', 'best running shoes for women')).toBe(false)
     expect(containsSeed('محاسبة العمر بالهجري', 'محاسبة العمر')).toBe(true)
   })
 })
@@ -117,20 +121,78 @@ describe('ResearchEngine', () => {
     expect(google.calls).toEqual(['age calculator', 'age calculator days'])
   })
 
-  it('backs off and pauses when Google keeps failing, then resumes', async () => {
+  it('backs off and cools down when Google keeps failing, then resumes', async () => {
     let failing = true
     const google = fakeGoogle({ failOn: () => failing })
     const { engine, state } = await runEngine(baseConfig({ maxDepth: 1, delayMs: 500 }), google)
-    expect(state.status).toBe('blocked')
+    expect(state.status).toBe('cooldown')
     expect(state.counters.failed).toBe(5)
     expect(state.delayMs).toBeGreaterThan(500)
+    expect(state.resumeAt - Date.now()).toBeGreaterThan(110000)
     failing = false
     await engine.resume()
     const after = engine.snapshot()
     expect(after.status).toBe('completed')
+    expect(after.resumeAt).toBe(null)
     // The first query failed 3 times and was skipped; everything else succeeded.
     expect(after.counters.ok).toBe(84)
     expect(after.failures).toHaveLength(1)
+  })
+
+  it('retries automatically after the cool-down, waiting longer each time', async () => {
+    vi.useFakeTimers()
+    try {
+      let failing = true
+      const google = fakeGoogle({ failOn: () => failing })
+      const engine = new ResearchEngine(createInitialState(baseConfig({ maxDepth: 1 })), { fetchSuggestions: google.fetch, random: () => 0 })
+      engine.sleep = async () => {}
+      await engine.run()
+      expect(engine.state.status).toBe('cooldown')
+      const firstWait = engine.state.resumeAt - Date.now()
+      expect(firstWait).toBe(120000)
+      // Still failing after the first automatic retry: the next wait doubles.
+      await vi.advanceTimersByTimeAsync(120000)
+      expect(engine.state.status).toBe('cooldown')
+      expect(engine.state.resumeAt - Date.now()).toBe(240000)
+      failing = false
+      await vi.advanceTimersByTimeAsync(240000)
+      expect(engine.state.status).toBe('completed')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('pausing during a cool-down cancels the automatic retry', async () => {
+    vi.useFakeTimers()
+    try {
+      const google = fakeGoogle({ failOn: () => true })
+      const engine = new ResearchEngine(createInitialState(baseConfig({ maxDepth: 1 })), { fetchSuggestions: google.fetch, random: () => 0 })
+      engine.sleep = async () => {}
+      await engine.run()
+      engine.pause()
+      const calls = google.calls.length
+      await vi.advanceTimersByTimeAsync(600000)
+      expect(engine.state.status).toBe('paused')
+      expect(google.calls.length).toBe(calls)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('drops suggestions that do not contain the seed words', async () => {
+    const google = {
+      async fetch() {
+        return [
+          { text: 'calculate age in days', position: 1 },
+          { text: 'age calculators online', position: 2 },
+          { text: 'pregnancy due date', position: 3 },
+          { text: 'agent calculator', position: 4 },
+        ]
+      },
+    }
+    const { state } = await runEngine(baseConfig({ maxDepth: 1, seedMethods: ['direct'] }), google)
+    expect(state.order).toEqual(['calculate age in days', 'age calculators online'])
+    expect(state.counters.skipped).toBe(2)
   })
 
   it('survives a save/restore round trip mid-run', async () => {
@@ -185,5 +247,39 @@ describe('csv', () => {
     expect(csvCell(5)).toBe('5')
     const csv = toCsv([{ a: 'x' }], [{ label: 'A', value: (r) => r.a }])
     expect(csv.startsWith('﻿A\r\nx')).toBe(true)
+  })
+})
+
+describe('cleanup', async () => {
+  const { applyCleanup, hasTerm, isOtherScript, presentSuggestions, scriptsIn, DEFAULT_CLEANUP } = await import('./cleanup.js')
+  const rows = ['age calculator jobs', 'age calculator job openings', 'age calculator reddit', 'age calculator in days',
+    'age calculator in months', 'आयु कैलकुलेटर age calculator', 'age calculator for kids in school with date of birth and time zone support']
+    .map((text) => ({ key: keyOf(text), text, tokens: tokenize(text) }))
+
+  it('matches whole words, plurals and phrases', () => {
+    expect(hasTerm('age calculator jobs', tokenize('age calculator jobs'), 'job')).toBe(true)
+    expect(hasTerm('agent calculator', tokenize('agent calculator'), 'age')).toBe(false)
+    expect(hasTerm('age in days and months', tokenize('age in days and months'), 'days and')).toBe(true)
+  })
+
+  it('applies exclude, include, script and length rules', () => {
+    const r1 = applyCleanup(rows, { ...DEFAULT_CLEANUP, exclude: ['job', 'reddit'] }, 'age calculator')
+    expect(r1.kept.map((r) => r.text)).not.toContain('age calculator jobs')
+    expect(r1.reasons).toMatchObject({ exclude: 3, script: 1 })
+    const r2 = applyCleanup(rows, { ...DEFAULT_CLEANUP, include: ['days', 'months'], hideOtherScripts: false }, 'age calculator')
+    expect(r2.kept.map((r) => r.text)).toEqual(['age calculator in days', 'age calculator in months'])
+    const r3 = applyCleanup(rows, { ...DEFAULT_CLEANUP, hideLong: true }, 'age calculator')
+    expect(r3.reasons.long).toBe(1)
+  })
+
+  it('treats other writing systems as other languages, but allows Latin everywhere', () => {
+    expect(isOtherScript('आयु कैलकुलेटर', scriptsIn('age calculator'))).toBe(true)
+    expect(isOtherScript('حساب العمر online', scriptsIn('حساب العمر'))).toBe(false)
+    expect(isOtherScript('年齢 計算 アプリ', scriptsIn('年齢 けいさん'))).toBe(false)
+  })
+
+  it('suggests only junk words that appear in the results', () => {
+    const s = presentSuggestions(rows, 'en', ['reddit'])
+    expect(s).toEqual([{ term: 'job', count: 2 }])
   })
 })

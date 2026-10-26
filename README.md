@@ -22,7 +22,19 @@ A free keyword research tool that collects Google Autocomplete suggestions and o
 | Standard | 2 | 400 | ~3.5 min |
 | Deep | 3 | 800 | ~7 min |
 
-Requests are capped at 800 per run. The default delay is 0.5 s. If Google stops answering, the delay doubles automatically; after 5 failures in a row the run pauses with a message, and the user can resume later. Progress is saved in the browser (localStorage), so a refresh doesn't lose results.
+Requests are capped at 800 per run. The default delay is 0.5 s. If Google stops answering, the delay doubles automatically; after 5 failures in a row the run **cools down for 2 minutes and retries by itself** (4, 8, then up to 10 minutes if it keeps happening), with a countdown and a "Retry now" button. Progress is saved in the browser (localStorage), so a refresh doesn't lose results.
+
+### Seed rule
+
+Every keyword must contain all the seed words, in any order. Plurals and words with the same root count: for "age calculator", *calculate age in days* and *age calculators* are kept, *agent calculator* and *pregnancy due date* are skipped. Short grammar words in the seed ("for", "in", "the") are optional. Skipped suggestions are counted as "Off-topic skipped".
+
+### Clean up
+
+- **Exclude words** — hide every keyword containing a word or phrase (plurals included). Suggestions such as *login, job, reddit, salary* are offered only when they appear in the results. In the **New words** tab, ✕ excludes a word in one click.
+- **Only keep keywords containing** — any of the words you list.
+- **Hide other languages/scripts** (on by default) and **hide very long keywords** (10+ words).
+
+Hidden keywords stay in the run and return when a rule is removed. Topics, new words and exports use the cleaned list.
 
 ## How it reaches Google without a server
 
@@ -56,6 +68,7 @@ src/
     expansion.js   builds the queries for each method
     engine.js      level-by-level research with budget, pause/resume, back-off
     analysis.js    intent tags, new words, topic groups
+    cleanup.js     exclude/include words, script and length filters
     wordlists.js   per-language word lists (questions, connectors, intents, stopwords)
     text.js        normalising, tokenising, seed matching
     csv.js         CSV export (UTF-8 BOM, formula-safe)
@@ -64,6 +77,7 @@ src/
     SetupForm.jsx  seed, country, language, presets, advanced settings
     RunPanel.jsx   progress and controls
     Results.jsx    keyword table, topics, new words, export
+    CleanupPanel.jsx  exclude/include chips and junk filters
 ```
 
 ## Limits
