@@ -35,10 +35,31 @@ export function parseTerms(text) {
   return [...new Set(String(text).split(/[\n,]+/).map((t) => keyOf(cleanText(t))).filter(Boolean))]
 }
 
-/** Whole-word match for single words (plus simple plurals); phrase match for multi-word terms. */
+/**
+ * Add the lookup structures used for fast matching (computed once per keyword).
+ * row.tokenSet: Set of words; row.joined: " word word " for phrase checks.
+ */
+export function prepareRow(row) {
+  const tokens = row.tokens ?? tokenize(row.text)
+  return { ...row, tokens, tokenSet: new Set(tokens), joined: ` ${tokens.join(' ')} ` }
+}
+
+/** Build a fast matcher: whole word (plus simple plurals) or, for multi-word terms, a phrase. */
+export function termMatcher(term) {
+  const words = tokenize(term)
+  if (words.length > 1) {
+    const phrase = ` ${words.join(' ')} `
+    return (row) => row.joined.includes(phrase)
+  }
+  const w = words[0] ?? term
+  const variants = [w, `${w}s`, `${w}es`]
+  if (w.endsWith('s')) variants.push(w.slice(0, -1))
+  return (row) => variants.some((v) => row.tokenSet.has(v))
+}
+
+/** Convenience wrapper used in tests and one-off checks. */
 export function hasTerm(text, tokens, term) {
-  if (term.includes(' ')) return ` ${tokens.join(' ')} `.includes(` ${tokenize(term).join(' ')} `)
-  return tokens.some((t) => t === term || t === `${term}s` || t === `${term}es` || `${t}s` === term)
+  return termMatcher(term)(prepareRow({ text, tokens }))
 }
 
 const SCRIPTS = [
@@ -79,13 +100,15 @@ export function isOtherScript(text, seedScripts) {
 export function applyCleanup(rows, cleanup, seed) {
   const seedScripts = scriptsIn(seed)
   const reasons = { exclude: 0, include: 0, script: 0, long: 0 }
+  const exclude = cleanup.exclude.map(termMatcher)
+  const include = cleanup.include.map(termMatcher)
   const kept = []
-  for (const row of rows) {
-    const tokens = row.tokens ?? tokenize(row.text)
-    if (cleanup.exclude.length && cleanup.exclude.some((term) => hasTerm(row.text, tokens, term))) { reasons.exclude++; continue }
-    if (cleanup.include.length && !cleanup.include.some((term) => hasTerm(row.text, tokens, term))) { reasons.include++; continue }
+  for (const original of rows) {
+    const row = original.tokenSet ? original : prepareRow(original)
+    if (exclude.length && exclude.some((match) => match(row))) { reasons.exclude++; continue }
+    if (include.length && !include.some((match) => match(row))) { reasons.include++; continue }
     if (cleanup.hideOtherScripts && isOtherScript(row.text, seedScripts)) { reasons.script++; continue }
-    if (cleanup.hideLong && tokens.length >= LONG_KEYWORD_WORDS) { reasons.long++; continue }
+    if (cleanup.hideLong && row.tokens.length >= LONG_KEYWORD_WORDS) { reasons.long++; continue }
     kept.push(row)
   }
   return { kept, hidden: rows.length - kept.length, reasons }
@@ -94,9 +117,15 @@ export function applyCleanup(rows, cleanup, seed) {
 /** How many keywords contain each suggested term (only terms that appear, most common first). */
 export function presentSuggestions(rows, language, alreadyExcluded) {
   const skip = new Set(alreadyExcluded)
-  return suggestedExcludesFor(language)
-    .filter((term) => !skip.has(term))
-    .map((term) => ({ term, count: rows.reduce((n, r) => n + (hasTerm(r.text, r.tokens ?? tokenize(r.text), term) ? 1 : 0), 0) }))
+  const terms = suggestedExcludesFor(language).filter((term) => !skip.has(term))
+  const matchers = terms.map(termMatcher)
+  const counts = new Array(terms.length).fill(0)
+  for (const original of rows) {
+    const row = original.tokenSet ? original : prepareRow(original)
+    for (let i = 0; i < matchers.length; i++) if (matchers[i](row)) counts[i]++
+  }
+  return terms
+    .map((term, i) => ({ term, count: counts[i] }))
     .filter((s) => s.count > 0)
     .sort((a, b) => b.count - a.count)
 }

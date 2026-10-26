@@ -42,6 +42,26 @@ export function newWordsOf(text, seedTokens, stopwords) {
   return out
 }
 
+// Per-keyword results don't depend on other keywords, so they are cached:
+// during a run only newly found keywords need work.
+const cache = new Map()
+const CACHE_LIMIT = 60000
+
+function perKeyword(text, seed, language, seedTokens, stopwords) {
+  const id = `${language}\u0000${seed}\u0000${text}`
+  let hit = cache.get(id)
+  if (!hit) {
+    if (cache.size > CACHE_LIMIT) cache.clear()
+    hit = {
+      words: tokenize(text).length,
+      intents: detectIntents(text, language),
+      newWords: newWordsOf(text, seedTokens, stopwords),
+    }
+    cache.set(id, hit)
+  }
+  return hit
+}
+
 /**
  * @param {Array<{key:string,text:string}>} keywords
  * @returns {{ rows, words, topics }}
@@ -53,15 +73,7 @@ export function analyze(keywords, { seed, language = 'en' }) {
   const seedTokens = tokenize(seed)
   const stopwords = new Set(listFor(STOPWORDS, language))
 
-  const rows = keywords.map((kw) => {
-    const tokens = tokenize(kw.text)
-    return {
-      ...kw,
-      words: tokens.length,
-      intents: detectIntents(kw.text, language),
-      newWords: newWordsOf(kw.text, seedTokens, stopwords),
-    }
-  })
+  const rows = keywords.map((kw) => ({ ...kw, ...perKeyword(kw.text, seed, language, seedTokens, stopwords) }))
 
   const freq = new Map()
   for (const row of rows) for (const w of row.newWords) freq.set(w, (freq.get(w) ?? 0) + 1)

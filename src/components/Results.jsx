@@ -1,9 +1,8 @@
-import { useDeferredValue, useMemo, useState } from 'react'
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { INTENTS, analyze } from '../lib/analysis.js'
 import { downloadText, safeFilename, toCsv } from '../lib/csv.js'
 import { methodLabel } from '../lib/expansion.js'
-import { applyCleanup, presentSuggestions } from '../lib/cleanup.js'
-import { tokenize } from '../lib/text.js'
+import { applyCleanup, prepareRow, presentSuggestions } from '../lib/cleanup.js'
 import CleanupPanel from './CleanupPanel.jsx'
 
 const PAGE_SIZE = 100
@@ -43,11 +42,20 @@ export default function Results({ research, starred, onToggleStar, cleanup, onCl
 
   // research.keywords is mutated in place by the engine, so key the memo on counts.
   const count = research.order.length
-  const version = useDeferredValue(`${count}:${research.counters.requests}:${research.status}`)
+  // While a run is going, refresh the analysis at most about once a second.
+  const liveVersion = `${count}:${research.counters.requests}:${research.status}`
+  const version = useDeferredValue(useThrottled(liveVersion, research.status === 'running' ? 1200 : 0))
+  const prepared = useRef(new Map())
   const base = useMemo(
     () => research.order.map((key, index) => {
       const kw = research.keywords[key]
-      return { key, index, ...kw, tokens: tokenize(kw.text) }
+      let lookup = prepared.current.get(key)
+      if (!lookup) {
+        const { tokens, tokenSet, joined } = prepareRow(kw)
+        lookup = { tokens, tokenSet, joined }
+        prepared.current.set(key, lookup)
+      }
+      return { key, index, ...kw, ...lookup }
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [version],
@@ -286,4 +294,17 @@ function Words({ words, seed, onOpen, onExclude }) {
       {words.length > 300 && <p className="hint">Showing the top 300 of {words.length} words.</p>}
     </>
   )
+}
+
+/** Returns `value`, updated at most once per `ms` (always delivers the latest value). */
+function useThrottled(value, ms) {
+  const [shown, setShown] = useState(value)
+  const last = useRef(0)
+  useEffect(() => {
+    if (!ms) { last.current = Date.now(); setShown(value); return undefined }
+    const wait = Math.max(0, last.current + ms - Date.now())
+    const id = setTimeout(() => { last.current = Date.now(); setShown(value) }, wait)
+    return () => clearTimeout(id)
+  }, [value, ms])
+  return ms ? shown : value
 }
