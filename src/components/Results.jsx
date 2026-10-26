@@ -175,20 +175,23 @@ export default function Results({ research, starred, onToggleStar, cleanup, onCl
             {isFiltered && <button type="button" className="btn small ghost" onClick={() => update(EMPTY_FILTERS)}>Clear filters</button>}
           </div>
 
-          <p className="count">{filtered.length.toLocaleString()} keyword{filtered.length === 1 ? '' : 's'}{isFiltered ? ' match' : ''}</p>
+          <div className="count-row">
+            <p className="count">{filtered.length.toLocaleString()} keyword{filtered.length === 1 ? '' : 's'}{isFiltered ? ' match' : ''}</p>
+            <ColumnGuide />
+          </div>
 
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th className="star-col"><span className="sr">Star</span></th>
-                  <SortTh id="keyword" sort={sort} setSort={setSort}>Keyword</SortTh>
-                  <SortTh id="words" sort={sort} setSort={setSort} num>Words</SortTh>
-                  <th>Intent</th>
-                  <SortTh id="topic" sort={sort} setSort={setSort}>Topic</SortTh>
-                  <SortTh id="hits" sort={sort} setSort={setSort} num title="How many different queries returned this keyword">Hits</SortTh>
-                  <SortTh id="position" sort={sort} setSort={setSort} num title="Best position in Google's list (1 = top)">Pos.</SortTh>
-                  <SortTh id="depth" sort={sort} setSort={setSort} num>Depth</SortTh>
+                  <th className="star-col" title={COLUMN_HELP.star.tip}><span className="sr">Star</span></th>
+                  <SortTh id="keyword" sort={sort} setSort={setSort} title={COLUMN_HELP.keyword.tip}>Keyword</SortTh>
+                  <SortTh id="words" sort={sort} setSort={setSort} num title={COLUMN_HELP.words.tip}>Words</SortTh>
+                  <th title={COLUMN_HELP.intent.tip}>Intent</th>
+                  <SortTh id="topic" sort={sort} setSort={setSort} title={COLUMN_HELP.topic.tip}>Topic</SortTh>
+                  <SortTh id="hits" sort={sort} setSort={setSort} num title={COLUMN_HELP.hits.tip}>Hits</SortTh>
+                  <SortTh id="position" sort={sort} setSort={setSort} num title={COLUMN_HELP.position.tip}>Pos.</SortTh>
+                  <SortTh id="depth" sort={sort} setSort={setSort} num title={COLUMN_HELP.depth.tip}>Depth</SortTh>
                 </tr>
               </thead>
               <tbody>
@@ -224,6 +227,67 @@ export default function Results({ research, starred, onToggleStar, cleanup, onCl
 
       {tab === 'words' && <Words words={analysis.words} seed={research.config.seed} onOpen={(word) => showInTable({ search: word })} onExclude={excludeWord} />}
     </section>
+  )
+}
+
+// Short tips appear when hovering a column header; the guide shows the full explanation.
+const COLUMN_HELP = {
+  star: {
+    label: '★',
+    tip: 'Star keywords you want to keep, then export only the starred ones.',
+    text: 'Click the star to shortlist a keyword. Use “Starred only” to see your shortlist and “Export starred” to download it.',
+  },
+  keyword: {
+    label: 'Keyword',
+    tip: 'A real search Google suggested. Hover a keyword to see which query found it.',
+    text: 'A search phrase Google suggested in its autocomplete list, so real people search it. Hover over a keyword to see the query that found it.',
+  },
+  words: {
+    label: 'Words',
+    tip: 'Number of words. 4+ words usually means a specific, easier-to-rank long-tail keyword.',
+    text: 'How many words the keyword has. Longer keywords (4+ words) are more specific and usually have less competition: good targets for blog posts.',
+  },
+  intent: {
+    label: 'Intent',
+    tip: 'What the searcher wants: Question, Comparison, Commercial, Local, Year or Informational.',
+    text: 'What the searcher is probably looking for, based on the words in the keyword: Question (how, what, why…), Comparison (vs, or, difference…), Commercial (best, price, cheap, app…), Local (near me…), Year (contains a year like 2026), or Informational (none of these). A keyword can have more than one.',
+  },
+  topic: {
+    label: 'Topic',
+    tip: 'The sub-topic this keyword belongs to. One topic is roughly one article.',
+    text: 'The keyword’s most common word that isn’t part of your seed, e.g. “days” for “age calculator in days”. Keywords with the same topic can usually be covered in one article. “other” means no shared word was found.',
+  },
+  hits: {
+    label: 'Hits',
+    tip: 'How many different searches returned this keyword. Higher = probably more popular.',
+    text: 'How many of the tool’s different queries made Google suggest this keyword. Example: if “age calculator”, “age calculator i” and “age calculator d” all suggested it, Hits = 3. Google suggests popular searches more often, so a high number is a hint of popularity. It is not search volume.',
+  },
+  position: {
+    label: 'Pos.',
+    tip: 'Best place it appeared in Google’s suggestion list. 1 = top of the list.',
+    text: 'Where the keyword appeared in Google’s autocomplete list (1 = first suggestion, up to about 15). Google lists more popular searches higher, so a lower number is better. If it appeared in several lists, the best position is shown.',
+  },
+  depth: {
+    label: 'Depth',
+    tip: '1 = found from your seed; 2–3 = found by searching earlier results (more specific).',
+    text: 'How the keyword was found. 1 = from your seed keyword directly. 2 = from searching a depth-1 keyword again. 3 = from searching a depth-2 keyword. Higher depth usually means longer, more specific phrases.',
+  },
+}
+
+function ColumnGuide() {
+  return (
+    <details className="column-guide">
+      <summary>What do the columns mean?</summary>
+      <dl>
+        {Object.values(COLUMN_HELP).map((c) => (
+          <div key={c.label}>
+            <dt>{c.label}</dt>
+            <dd>{c.text}</dd>
+          </div>
+        ))}
+      </dl>
+      <p className="hint">Tip: a good blog keyword is often 4+ words, a Question or Informational intent, and in a clear topic. Hits and Pos. are popularity hints only, not search volume.</p>
+    </details>
   )
 }
 

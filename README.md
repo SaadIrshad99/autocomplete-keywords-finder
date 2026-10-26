@@ -16,6 +16,8 @@ A free keyword research tool that collects Google Autocomplete suggestions and o
    - **Topics** — keywords grouped by their most common new word (roughly one article per group)
 5. Star keywords, filter, sort, and export CSV (all, filtered, or starred).
 
+Every column header has a hover tip, and **“What do the columns mean?”** above the table explains each one (Hits, Pos., Depth, Intent, Topic…).
+
 | Preset | Depth | Max requests | Time at 0.5 s |
 |---|---|---|---|
 | Quick | 1 | 100 | ~1 min |

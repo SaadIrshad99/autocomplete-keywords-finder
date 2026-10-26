@@ -243,3 +243,15 @@ tr.is-starred td.kw { font-weight: 600; }
 @media (max-width: 720px) {
   .cleanup-grid { grid-template-columns: 1fr; }
 }
+
+/* Column guide */
+.count-row { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; gap: 4px 12px; margin: 10px 0 6px; }
+.count-row .count { margin: 0; }
+.column-guide { font-size: 13.5px; flex: 1 1 100%; order: 2; }
+.column-guide > summary { cursor: pointer; color: var(--accent); font-weight: 600; width: max-content; margin-left: auto; margin-top: -21px; }
+.column-guide[open] > summary { margin-bottom: 8px; }
+.column-guide dl { margin: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 8px; align-items: start; }
+.column-guide dl > div { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; }
+.column-guide dt { font-weight: 700; margin-bottom: 2px; }
+.column-guide dd { margin: 0; color: var(--muted); line-height: 1.45; }
+.column-guide .hint { margin-top: 8px; }
